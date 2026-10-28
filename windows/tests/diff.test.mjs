@@ -190,3 +190,29 @@ test("buildFileDiff — Write and other tools", () => {
   assert.equal(buildFileDiff("Bash", { command: "ls" }), null);
   assert.equal(buildFileDiff("Read", { file_path: "/p/n.md" }), null);
 });
+
+test("suffix trimming preserves duplicate alignment and LCS ties", () => {
+  assert.deepEqual(allLines(fromEdit("a\na", "a", "/repeat")), [
+    { kind: "removed", text: "a", origLine: 1, newLine: -1 },
+    { kind: "context", text: "a", origLine: 2, newLine: 1 },
+  ]);
+  assert.deepEqual(allLines(fromEdit("a\nb", "b\na", "/tie")), [
+    { kind: "added", text: "b", origLine: -1, newLine: 1 },
+    { kind: "context", text: "a", origLine: 1, newLine: 2 },
+    { kind: "removed", text: "b", origLine: 2, newLine: -1 },
+  ]);
+  assert.deepEqual(fromEdit("", "", "/empty").hunks, []);
+});
+
+test("one-million-cell boundary handles unchanged, first, middle and last edits", () => {
+  const lines = Array.from({ length: 1000 }, (_, i) => `line${i}`);
+  const text = lines.join("\n");
+  assert.deepEqual(fromEdit(text, text, "/same").hunks, []);
+  for (const index of [0, 500, 999]) {
+    const changed = lines.slice();
+    changed[index] = "changed";
+    const d = fromEdit(text, changed.join("\n"), "/limit");
+    assert.deepEqual([d.tooLarge, d.added, d.removed], [false, 1, 1]);
+    assert.equal(allLines(d).find((l) => l.kind === "removed").origLine, index + 1);
+  }
+});

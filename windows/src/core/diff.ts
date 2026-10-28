@@ -166,31 +166,40 @@ function splitLines(text: string): string[] {
 function buildDiffLines(oldLines: string[], newLines: string[]): DiffLine[] {
   const m = oldLines.length;
   const n = newLines.length;
-  const w = n + 1;
-  // dp[i*w + j] = LCS length of oldLines[0..<i] and newLines[0..<j]. Lengths stay
-  // under DIFF_MAX_LINES, so 16 bits are plenty and the table is half the size.
-  const dp = new Uint16Array((m + 1) * w);
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i * w + j] = oldLines[i - 1] === newLines[j - 1]
-        ? dp[(i - 1) * w + j - 1] + 1
-        : Math.max(dp[(i - 1) * w + j], dp[i * w + j - 1]);
-    }
-  }
-
-  // Backtrack to the matching pairs.
+  // Backtracking consumes equal trailing lines first. Remove that work before
+  // allocating the table. Keep prefixes intact to preserve repeated-line ties.
+  let rows = m;
+  let columns = n;
   const matches: [number, number][] = [];
-  let i = m;
-  let j = n;
-  while (i > 0 && j > 0) {
-    if (oldLines[i - 1] === newLines[j - 1]) {
-      matches.push([i - 1, j - 1]);
-      i--;
-      j--;
-    } else if (dp[(i - 1) * w + j] >= dp[i * w + j - 1]) {
-      i--;
-    } else {
-      j--;
+  while (rows > 0 && columns > 0 && oldLines[rows - 1] === newLines[columns - 1]) {
+    matches.push([--rows, --columns]);
+  }
+  if (rows > 0 && columns > 0) {
+    const w = columns + 1;
+    // LCS lengths stay under DIFF_MAX_LINES, so 16 bits are sufficient.
+    const dp = new Uint16Array((rows + 1) * w);
+    for (let i = 1; i <= rows; i++) {
+      const row = i * w;
+      const previous = row - w;
+      for (let j = 1; j <= columns; j++) {
+        dp[row + j] = oldLines[i - 1] === newLines[j - 1]
+          ? dp[previous + j - 1] + 1
+          : Math.max(dp[previous + j], dp[row + j - 1]);
+      }
+    }
+
+    let i = rows;
+    let j = columns;
+    while (i > 0 && j > 0) {
+      if (oldLines[i - 1] === newLines[j - 1]) {
+        matches.push([i - 1, j - 1]);
+        i--;
+        j--;
+      } else if (dp[(i - 1) * w + j] >= dp[i * w + j - 1]) {
+        i--;
+      } else {
+        j--;
+      }
     }
   }
   matches.reverse();

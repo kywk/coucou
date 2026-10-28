@@ -53,8 +53,11 @@ enum DiffEngine {
         }
         let flat = buildDiffLines(oldLines: oldLines, newLines: newLines)
         let hunks = buildHunks(from: flat, context: 3)
-        let added   = flat.filter { $0.kind == .added   }.count
-        let removed = flat.filter { $0.kind == .removed }.count
+        var added = 0, removed = 0
+        for line in flat {
+            if line.kind == .added { added += 1 }
+            else if line.kind == .removed { removed += 1 }
+        }
         return FileDiff(path: path, added: added, removed: removed, hunks: hunks, tooLarge: false, isNewFile: false)
     }
 
@@ -99,37 +102,51 @@ enum DiffEngine {
         let m = oldLines.count
         let n = newLines.count
 
-        // Build LCS DP table
-        // dp[i][j] = LCS length of oldLines[0..<i] and newLines[0..<j]
-        var dp = [[Int]](repeating: [Int](repeating: 0, count: n + 1), count: m + 1)
-        for i in 1...max(1, m) {
-            for j in 1...max(1, n) {
-                guard i <= m && j <= n else { continue }
-                if oldLines[i - 1] == newLines[j - 1] {
-                    dp[i][j] = dp[i - 1][j - 1] + 1
-                } else {
-                    dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
-                }
-            }
+        // Backtracking always consumes equal trailing lines first. Peel those
+        // off before allocating the table, preserving the existing tie-breaking.
+        // Do not trim a common prefix: repeated lines can change its alignment.
+        var rows = m, columns = n
+        var matches: [(Int, Int)] = []
+        matches.reserveCapacity(min(m, n))
+        while rows > 0 && columns > 0 && oldLines[rows - 1] == newLines[columns - 1] {
+            rows -= 1; columns -= 1
+            matches.append((rows, columns))
         }
 
-        // Backtrack to get matching pairs
-        var matches: [(Int, Int)] = []  // (oldIdx 0-based, newIdx 0-based)
-        var i = m, j = n
-        while i > 0 && j > 0 {
-            if oldLines[i - 1] == newLines[j - 1] {
-                matches.append((i - 1, j - 1))
-                i -= 1; j -= 1
-            } else if dp[i - 1][j] >= dp[i][j - 1] {
-                i -= 1
-            } else {
-                j -= 1
+        if rows > 0 && columns > 0 {
+            // LCS lengths cannot exceed maxLines (4000). A contiguous UInt16
+            // table uses a quarter of the former Int payload on 64-bit platforms.
+            let width = columns + 1
+            var dp = [UInt16](repeating: 0, count: (rows + 1) * width)
+            for i in 1...rows {
+                let row = i * width
+                let previous = row - width
+                for j in 1...columns {
+                    if oldLines[i - 1] == newLines[j - 1] {
+                        dp[row + j] = dp[previous + j - 1] + 1
+                    } else {
+                        dp[row + j] = max(dp[previous + j], dp[row + j - 1])
+                    }
+                }
+            }
+
+            var i = rows, j = columns
+            while i > 0 && j > 0 {
+                if oldLines[i - 1] == newLines[j - 1] {
+                    matches.append((i - 1, j - 1))
+                    i -= 1; j -= 1
+                } else if dp[(i - 1) * width + j] >= dp[i * width + j - 1] {
+                    i -= 1
+                } else {
+                    j -= 1
+                }
             }
         }
         matches.reverse()
 
         // Build flat diff from LCS pairs
         var result: [DiffLine] = []
+        result.reserveCapacity(m + n - matches.count)
         var prevOld = -1
         var prevNew = -1
 
@@ -170,25 +187,15 @@ enum DiffEngine {
     private static func buildHunks(from lines: [DiffLine], context: Int) -> [DiffHunk] {
         guard !lines.isEmpty else { return [] }
 
-        // Find indices of changed lines
-        var changedIndices: [Int] = []
-        for (i, line) in lines.enumerated() {
-            if line.kind != .context { changedIndices.append(i) }
-        }
-        guard !changedIndices.isEmpty else { return [] }
-
-        // Expand ±context around each changed line
-        let ranges: [(Int, Int)] = changedIndices.map {
-            (max(0, $0 - context), min(lines.count - 1, $0 + context))
-        }
-
-        // Merge overlapping ranges
+        // Expand and merge directly, without intermediate index/range arrays.
         var merged: [(Int, Int)] = []
-        for r in ranges {
-            if let last = merged.last, r.0 <= last.1 + 1 {
-                merged[merged.count - 1] = (last.0, max(last.1, r.1))
+        for (i, line) in lines.enumerated() where line.kind != .context {
+            let start = max(0, i - context)
+            let end = min(lines.count - 1, i + context)
+            if let last = merged.last, start <= last.1 + 1 {
+                merged[merged.count - 1] = (last.0, max(last.1, end))
             } else {
-                merged.append(r)
+                merged.append((start, end))
             }
         }
 

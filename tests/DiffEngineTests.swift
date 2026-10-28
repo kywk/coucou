@@ -210,6 +210,34 @@ enum DiffEngineTests {
                 DiffEngine.toOneLine("\n\nActual content.") == "Actual content.")
         }
 
+        print("DiffEngine — suffix alignment and table boundaries")
+        do {
+            let d = DiffEngine.fromEdit(old: "a\na", new: "a", path: "/repeat")
+            checkTrue("duplicate prefix must not displace suffix match", d.hunks.first?.lines == [
+                DiffLine(kind: .removed, text: "a", origLine: 1, newLine: -1),
+                DiffLine(kind: .context, text: "a", origLine: 2, newLine: 1),
+            ])
+            let tied = DiffEngine.fromEdit(old: "a\nb", new: "b\na", path: "/tie")
+            checkTrue("LCS ties retain original alignment", tied.hunks.first?.lines == [
+                DiffLine(kind: .added, text: "b", origLine: -1, newLine: 1),
+                DiffLine(kind: .context, text: "a", origLine: 1, newLine: 2),
+                DiffLine(kind: .removed, text: "b", origLine: 2, newLine: -1),
+            ])
+            let lines = (0..<1000).map { "line\($0)" }
+            let text = lines.joined(separator: "\n")
+            checkTrue("identical input has no hunks",
+                DiffEngine.fromEdit(old: text, new: text, path: "/same").hunks.isEmpty)
+            for index in [0, 500, 999] {
+                var changed = lines
+                changed[index] = "changed"
+                let result = DiffEngine.fromEdit(old: text, new: changed.joined(separator: "\n"), path: "/limit")
+                checkTrue("one million cells, edit at \(index)",
+                    !result.tooLarge && result.added == 1 && result.removed == 1)
+                checkInt("original line number", result.hunks[0].lines.first { $0.kind == .removed }!.origLine, index + 1)
+            }
+            checkTrue("empty inputs", DiffEngine.fromEdit(old: "", new: "", path: "/empty").hunks.isEmpty)
+        }
+
         // ── finish ─────────────────────────────────────────────────────────────
         if failures == 0 {
             print("\nAll tests passed.")
